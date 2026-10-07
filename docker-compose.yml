@@ -32,6 +32,16 @@ services:
       timeout: 5s
       retries: 10
 
+  migrate:
+    build: .
+    command: ["migrate"]
+    environment:
+      DATABASE_URL: postgresql+asyncpg://payments:payments@postgres:5432/payments
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: "no"
+
   api:
     build: .
     command: ["api"]
@@ -49,6 +59,8 @@ services:
         condition: service_healthy
       rabbitmq:
         condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
       interval: 10s
@@ -69,8 +81,8 @@ services:
         condition: service_healthy
       rabbitmq:
         condition: service_healthy
-      api:
-        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
 
   sonarqube:
     image: sonarqube:community

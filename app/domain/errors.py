@@ -1,4 +1,4 @@
-"""Доменные исключения сервиса платежей."""
+"""Доменные ошибки. HTTP-коды назначает слой API, а не сервисы."""
 
 
 class PaymentError(Exception):
@@ -10,7 +10,7 @@ class PaymentNotFoundError(PaymentError):
 
 
 class IdempotencyConflictError(PaymentError):
-    """Тот же Idempotency-Key, но другое тело запроса — дубль с другим смыслом."""
+    """Тот же Idempotency-Key, но другое тело запроса."""
 
     def __init__(self, payment_id: str) -> None:
         self.payment_id = payment_id
@@ -18,4 +18,8 @@ class IdempotencyConflictError(PaymentError):
 
 
 class PaymentProcessingError(PaymentError):
-    """Сбой обработки сообщения (шлюз уже мог завершиться — смотри статус в БД)."""
+    """Временный сбой обработки: сообщение можно повторить."""
+
+
+class NonRetryableError(PaymentError):
+    """Повтор не поможет (например, платежа нет в БД). Сообщение уходит в DLQ."""

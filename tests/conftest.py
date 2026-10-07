@@ -18,8 +18,9 @@ os.environ.setdefault(
 )
 os.environ.setdefault("RABBITMQ_URL", "amqp://guest:guest@localhost:5672/")
 
+from app.domain.enums import Currency, PaymentStatus
 from app.main import create_app
-from app.models.payment import Currency, Payment, PaymentStatus
+from app.models.payment import Payment
 
 
 @pytest.fixture

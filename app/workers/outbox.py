@@ -1,50 +1,56 @@
-"""Публикация событий из таблицы outbox в RabbitMQ.
+"""Relay таблицы outbox в RabbitMQ.
 
-Publisher крутится фоном в процессе API: так в compose достаточно сервисов
-api + consumer, без отдельного «relay». Несколько реплик API безопасны —
-строки берутся через FOR UPDATE SKIP LOCKED.
+Крутится в процессе API. Несколько реплик безопасны: строки берутся
+через FOR UPDATE SKIP LOCKED.
 """
 
 from __future__ import annotations
 
 import asyncio
 import logging
-from datetime import UTC, datetime
+from datetime import timedelta
 
-from sqlalchemy import select
+from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import get_settings
-from app.constants import OUTBOX_BATCH_SIZE, PAYMENTS_NEW_ROUTING_KEY
+from app.constants import (
+    OUTBOX_BATCH_SIZE,
+    OUTBOX_MAX_PUBLISH_ATTEMPTS,
+    OUTBOX_RETENTION_HOURS,
+)
 from app.db.session import get_session_factory
+from app.domain.clock import utc_now
 from app.messaging.broker import get_broker
-from app.messaging.queues import payments_exchange
+from app.messaging.topology import PAYMENTS_NEW_ROUTING_KEY, payments_exchange
 from app.models.outbox import OutboxEvent
 
 logger = logging.getLogger(__name__)
 
 
 class OutboxPublisher:
-    """Relay: неопубликованные строки outbox → exchange payments."""
+    """Неопубликованные строки outbox -> exchange payments."""
 
     def __init__(self) -> None:
         self._settings = get_settings()
         self._broker = get_broker()
 
     async def publish_batch(self, session: AsyncSession) -> int:
-        """Публикует пачку событий. Возвращает число успешно отправленных."""
+        """Публикует пачку. Возвращает число успешных отправок."""
         published = 0
-        now = datetime.now(UTC)
+        now = utc_now()
         async with session.begin():
             stmt = (
                 select(OutboxEvent)
-                .where(OutboxEvent.published_at.is_(None))
+                .where(
+                    OutboxEvent.published_at.is_(None),
+                    OutboxEvent.publish_attempts < OUTBOX_MAX_PUBLISH_ATTEMPTS,
+                )
                 .order_by(OutboxEvent.created_at)
                 .limit(OUTBOX_BATCH_SIZE)
                 .with_for_update(skip_locked=True)
             )
-            result = await session.scalars(stmt)
-            events = list(result)
+            events = list(await session.scalars(stmt))
             for event in events:
                 try:
                     await self._broker.publish(
@@ -67,14 +73,31 @@ class OutboxPublisher:
                     )
         return published
 
+    async def purge_published(self, session: AsyncSession) -> int:
+        """Удаляет уже отправленные события старше срока хранения."""
+        cutoff = utc_now() - timedelta(hours=OUTBOX_RETENTION_HOURS)
+        result = await session.execute(
+            delete(OutboxEvent).where(
+                OutboxEvent.published_at.is_not(None),
+                OutboxEvent.published_at < cutoff,
+            )
+        )
+        await session.commit()
+        removed = result.rowcount or 0
+        if removed:
+            logger.info("Purged %s published outbox rows", removed)
+        return removed
+
     async def run_forever(self, stop_event: asyncio.Event) -> None:
-        """Цикл до сигнала остановки (lifespan FastAPI)."""
+        """Цикл до сигнала остановки из lifespan FastAPI."""
         interval = self._settings.outbox_poll_interval_seconds
         while not stop_event.is_set():
             try:
                 factory = get_session_factory()
                 async with factory() as session:
                     await self.publish_batch(session)
+                async with factory() as session:
+                    await self.purge_published(session)
             except Exception:
                 logger.exception("Outbox poll iteration failed")
             try:

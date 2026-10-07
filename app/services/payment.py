@@ -11,10 +11,12 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.constants import OUTBOX_EVENT_PAYMENTS_NEW
+from app.domain.enums import Currency, PaymentStatus
+from app.domain.errors import IdempotencyConflictError, PaymentNotFoundError
 from app.models.outbox import OutboxEvent
-from app.models.payment import Currency, Payment, PaymentStatus
-from app.schemas.payment import PaymentCreateRequest, PaymentNewEvent
-from app.services.errors import IdempotencyConflictError, PaymentNotFoundError
+from app.models.payment import Payment
+from app.schemas.events import PaymentNewEvent
+from app.schemas.http import PaymentCreateRequest
 
 logger = logging.getLogger(__name__)
 
@@ -59,8 +61,10 @@ class PaymentService:
             event_type=OUTBOX_EVENT_PAYMENTS_NEW,
             payload=PaymentNewEvent.from_payment_id(payment_id).model_dump(mode="json"),
         )
-        # Одна транзакция: без события в outbox платёж не считается принятым.
-        self._session.add_all([payment, event])
+        # Сначала платёж, потом outbox: FK проверяется сразу, не в конце транзакции.
+        self._session.add(payment)
+        await self._session.flush()
+        self._session.add(event)
 
         try:
             await self._session.commit()

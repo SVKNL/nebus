@@ -2,7 +2,7 @@
 
 Микросервис принимает платежи по HTTP, **гарантированно** публикует событие в RabbitMQ через **Outbox**, обрабатывает его одним consumer'ом (эмуляция платёжного шлюза 2–5 секунд, 90% success / 10% fail) и уведомляет клиента **webhook'ом**.
 
-Стек: **FastAPI + Pydantic v2**, **SQLAlchemy 2.0 async**, **PostgreSQL**, **RabbitMQ (FastStream)**, **Alembic**, **Docker Compose**.
+Стек: **FastAPI + Pydantic v2**, **SQLAlchemy 2.0 async**, **PostgreSQL**, **RabbitMQ (FastStream)**, **Alembic**, **Docker Compose**, **Poetry**.
 
 ## Архитектура
 
@@ -48,6 +48,8 @@ Consumer идемпотентен: повторная доставка не вы
 | Сообщение очереди | 3 попытки; между ними delayed retry через TTL-очередь |
 | После 3-й ошибки | сообщение в `payments.new.dlq` |
 
+Webhook повторяется внутри одной обработки, а очередь — отдельно. В худшем случае это до 9 HTTP-вызовов. Строка outbox после 10 неудачных публикаций больше не берётся в работу. Опубликованные строки старше 24 часов удаляются.
+
 ## Запуск
 
 Нужны Docker и Docker Compose v2.
@@ -63,10 +65,21 @@ docker compose up --build
 | --- | --- |
 | API, Swagger | http://localhost:8000/docs |
 | Health | http://localhost:8000/health |
+| Ready | http://localhost:8000/ready |
 | RabbitMQ UI | http://localhost:15672 (guest/guest) |
 | PostgreSQL | localhost:5432, user/password/db: `payments` |
 
-Миграции Alembic выполняются при старте контейнеров `api` и `consumer`.
+В compose пять сервисов: `postgres`, `rabbitmq`, `migrate`, `api`, `consumer`.
+
+Миграции выполняет одноразовый сервис `migrate` и завершается. `api` и `consumer` стартуют после него и сами миграции не гоняют. Если RabbitMQ недоступен в момент старта API, HTTP всё равно поднимается: платежи пишутся в БД, relay подключится повторно.
+
+`/health` отвечает `200`, пока процесс жив. `/ready` смотрит базу и брокер:
+
+```json
+{"status": "ready", "database": true, "broker": true, "outbox_pending": 0}
+```
+
+Без базы ответ `503` (`not_ready`). База есть, а брокер ещё нет — `200` и `status: degraded`: новые платежи принимаются, публикация в очередь ждёт соединения.
 
 ## Примеры API
 
@@ -109,6 +122,23 @@ curl -X GET http://localhost:8000/api/v1/payments/<payment_id> \
 
 Через несколько секунд `status` станет `succeeded` или `failed`, появятся `processed_at` и `webhook_sent_at`.
 
+```json
+{
+  "payment_id": "3fa85f64-5717-4562-b3fc-2c963f66afa6",
+  "amount": "100.50",
+  "currency": "RUB",
+  "description": "Оплата заказа 42",
+  "metadata": {"order_id": "42"},
+  "status": "succeeded",
+  "webhook_url": "https://webhook.site/your-id",
+  "created_at": "2026-10-06T12:00:00+00:00",
+  "processed_at": "2026-10-06T12:00:04+00:00",
+  "webhook_sent_at": "2026-10-06T12:00:04+00:00"
+}
+```
+
+Сумма в JSON — строка, чтобы не терять копейки.
+
 ### Ошибки
 
 | Код | Когда |
@@ -123,23 +153,20 @@ curl -X GET http://localhost:8000/api/v1/payments/<payment_id> \
 PostgreSQL и RabbitMQ всё равно нужны (можно поднять только их из compose).
 
 ```bash
-python -m venv .venv
-.venv\Scripts\activate
-pip install -e ".[dev]"
-set DATABASE_URL=postgresql+asyncpg://payments:payments@localhost:5432/payments
-set RABBITMQ_URL=amqp://guest:guest@localhost:5672/
-set API_KEY=test-api-key-change-me
-alembic upgrade head
-uvicorn app.main:app --reload
-faststream run app.consumer.main:app
+pip install poetry==2.1.4
+poetry install --with dev
+poetry run alembic upgrade head
+poetry run uvicorn app.main:app --reload
+poetry run faststream run app.workers.consumer:app
 ```
+
+Переменные — в `.env` по образцу `.env.example` (файл `.env` в git не коммитится). Для миграций нужен только `DATABASE_URL`.
 
 ## Ruff
 
 ```bash
-ruff check app tests
-ruff format app tests
-ruff check app tests --output-format json -o ruff-report.json
+poetry run ruff check app tests
+poetry run ruff format app tests
 ```
 
 Конфигурация — в `pyproject.toml` (py312, линия 100, правила E/F/I/N/UP/B/S/RUF/ASYNC и др.).
@@ -147,10 +174,10 @@ ruff check app tests --output-format json -o ruff-report.json
 ## Тесты
 
 ```bash
-pytest --cov=app --cov-report=xml --cov-report=term-missing
+poetry run pytest --cov=app --cov-report=xml --cov-report=term-missing
 ```
 
-CI (GitHub Actions) гоняет Ruff и pytest на каждый push.
+Интеграционные тесты в `tests/integration` поднимают PostgreSQL и RabbitMQ через testcontainers. Без Docker они пропускаются. Зависимости зафиксированы в `poetry.lock`.
 
 ## SonarQube
 
@@ -165,27 +192,31 @@ CI (GitHub Actions) гоняет Ruff и pytest на каждый push.
 3. Прогнать анализ (нужны `coverage.xml` и `ruff-report.json`):
 
    ```bash
-   pytest --cov=app --cov-report=xml
-   ruff check app tests --output-format json -o ruff-report.json
+   poetry run pytest --cov=app --cov-report=xml
+   poetry run ruff check app tests --output-format json -o ruff-report.json
    docker compose --profile sonar run --rm -e SONAR_TOKEN=<token> sonar-scanner
    ```
 
 Настройки проекта — `sonar-project.properties` (`sonar.sources=app`, Python 3.12, отчёты coverage и Ruff).
 
-## Структура репозитория
+## Структура
 
 ```
 app/
-  api/v1/          HTTP эндпоинты
-  consumer/        FastStream subscriber + retry/DLQ
-  messaging/       broker, очереди, политика попыток
-  models/          Payment, OutboxEvent
-  services/        create/get, outbox, gateway, webhook, processor
-alembic/versions/  миграция payments + outbox
-tests/             юнит-тесты без живых Postgres/Rabbit
+  api/            HTTP, ключ, маппинг ошибок в коды ответов
+  domain/         статусы, валюты, ошибки, время
+  schemas/        отдельно контракт HTTP, событие очереди и webhook
+  services/       создание платежа и обработка сообщения
+  adapters/       эмуляция шлюза и доставка webhook
+  messaging/      топология RabbitMQ, retry, DLQ
+  workers/        relay outbox и consumer очереди payments.new
+  ops/            /ready: база, брокер, число неотправленных событий
+  models/         Payment, OutboxEvent
 ```
+
+Локальный файл `.env` в репозиторий не входит. Шаблон — `.env.example` с адресами `localhost`. В Docker Compose адреса Postgres и RabbitMQ заданы в `docker-compose.yml` и перекрывают шаблон. Версии библиотек зафиксированы в `poetry.lock`.
 
 ## Таблицы
 
 - `payments` — платёж: сумма Decimal, валюта RUB/USD/EUR, описание, JSON metadata, статус, idempotency key, webhook URL, даты создания/обработки, `webhook_sent_at`.
-- `outbox` — событие `payments.new`, payload JSON, `published_at`, счётчик попыток публикации.
+- `outbox` — событие `payments.new`, payload JSON, `published_at`, счётчик попыток публикации. После 10 неудач строка больше не выбирается. Опубликованные строки старше 24 часов удаляются.

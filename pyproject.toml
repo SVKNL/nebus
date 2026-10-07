@@ -1,47 +1,47 @@
-[build-system]
-requires = ["setuptools>=75", "wheel"]
-build-backend = "setuptools.build_meta"
-
-[project]
+[tool.poetry]
 name = "nebus-payments"
 version = "1.0.0"
 description = "Асинхронный микросервис процессинга платежей"
+authors = ["SVKNL"]
 readme = "README.md"
-requires-python = ">=3.12"
-dependencies = [
-    "alembic>=1.14.0",
-    "asyncpg>=0.30.0",
-    "fastapi>=0.115.6",
-    "faststream[rabbit]>=0.5.35",
-    "httpx>=0.28.1",
-    "pydantic>=2.10.4",
-    "pydantic-settings>=2.7.0",
-    "sqlalchemy[asyncio]>=2.0.36",
-    "tenacity>=9.0.0",
-    "uvicorn[standard]>=0.34.0",
-]
+packages = [{include = "app"}]
 
-[project.optional-dependencies]
-dev = [
-    "pytest>=8.3.4",
-    "pytest-asyncio>=0.25.0",
-    "pytest-cov>=6.0.0",
-    "ruff>=0.9.0",
-]
+[tool.poetry.dependencies]
+python = "^3.12"
+alembic = ">=1.14.0"
+asyncpg = ">=0.30.0"
+fastapi = ">=0.115.6"
+faststream = {version = ">=0.5.35,<0.8", extras = ["rabbit", "cli"]}
+httpx = ">=0.28.1"
+pydantic = ">=2.10.4"
+pydantic-settings = ">=2.7.0"
+sqlalchemy = {version = ">=2.0.36", extras = ["asyncio"]}
+tenacity = ">=9.0.0"
+uvicorn = {version = ">=0.34.0", extras = ["standard"]}
 
-[tool.setuptools.packages.find]
-include = ["app*"]
+[tool.poetry.group.dev.dependencies]
+pytest = ">=8.3.4"
+pytest-asyncio = ">=0.25.0"
+pytest-cov = ">=6.0.0"
+ruff = ">=0.9.0"
+testcontainers = {version = ">=4.9.0", extras = ["postgres", "rabbitmq"]}
+
+[build-system]
+requires = ["poetry-core>=2.0.0"]
+build-backend = "poetry.core.masonry.api"
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
 asyncio_default_fixture_loop_scope = "function"
 testpaths = ["tests"]
 pythonpath = ["."]
+markers = [
+    "integration: тесты с PostgreSQL и RabbitMQ в Docker",
+]
 
 [tool.coverage.run]
 source = ["app"]
 branch = true
-omit = ["app/consumer/main.py"]
 
 [tool.coverage.report]
 fail_under = 70
@@ -81,7 +81,7 @@ ignore = [
 ]
 
 [tool.ruff.lint.per-file-ignores]
-"tests/**/*.py" = ["S101", "PLR2004", "E402"]
+"tests/**/*.py" = ["S101", "PLR2004", "E402", "S105", "S106"]
 "alembic/env.py" = ["E402"]
 
 [tool.ruff.format]

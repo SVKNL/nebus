@@ -3,16 +3,16 @@
 from __future__ import annotations
 
 import logging
-from datetime import UTC, datetime
 from uuid import UUID
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.adapters.gateway import EmulatedPaymentGateway, PaymentGateway
+from app.adapters.webhook import WebhookNotifier
+from app.domain.clock import utc_now
+from app.domain.errors import NonRetryableError, PaymentNotFoundError
 from app.models.payment import Payment
-from app.services.errors import PaymentNotFoundError, PaymentProcessingError
-from app.services.gateway import EmulatedPaymentGateway, PaymentGateway
-from app.services.webhook import WebhookNotifier
 
 logger = logging.getLogger(__name__)
 
@@ -42,7 +42,7 @@ class PaymentProcessor:
         if not payment.is_terminal():
             status = await self._gateway.charge(payment)
             payment.status = status
-            payment.processed_at = datetime.now(UTC)
+            payment.processed_at = utc_now()
             await self._session.commit()
             logger.info("Payment processed payment_id=%s status=%s", payment.id, payment.status)
         else:
@@ -79,5 +79,4 @@ async def process_payment_message(
     try:
         await processor.process(payment_id)
     except PaymentNotFoundError as exc:
-        # Сообщения про «потерянный» id не ретраим бесконечно: это явный баг продюсера.
-        raise PaymentProcessingError(f"Платёж {payment_id} не найден") from exc
+        raise NonRetryableError(f"Платёж {payment_id} не найден") from exc

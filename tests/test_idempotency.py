@@ -2,8 +2,9 @@
 
 from decimal import Decimal
 
-from app.models.payment import Currency, Payment, PaymentStatus
-from app.schemas.payment import PaymentCreateRequest
+from app.domain.enums import Currency, PaymentStatus
+from app.models.payment import Payment
+from app.schemas.http import PaymentCreateRequest
 from app.services.payment import payloads_equivalent
 
 

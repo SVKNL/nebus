@@ -1,41 +1,27 @@
-"""Точка входа FastAPI: HTTP API + фоновый outbox publisher."""
+"""Точка входа FastAPI: HTTP API и фоновый relay outbox."""
 
 from __future__ import annotations
 
 import asyncio
-import logging
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager, suppress
 
 from fastapi import FastAPI
+from fastapi.responses import JSONResponse
 
+from app.api.errors import register_exception_handlers
 from app.api.v1 import api_v1_router
-from app.config import get_settings
-from app.messaging.broker import get_broker
-from app.services.outbox import OutboxPublisher
-
-logger = logging.getLogger(__name__)
-
-
-def setup_logging() -> None:
-    """Базовая конфигурация логов процесса API."""
-    settings = get_settings()
-    logging.basicConfig(
-        level=settings.log_level,
-        format="%(asctime)s %(levelname)s [%(name)s] %(message)s",
-    )
+from app.log_config import setup_logging
+from app.ops.readiness import readiness_report
+from app.workers.broker_loop import supervise_broker
 
 
 @asynccontextmanager
 async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
-    """Старт брокера и цикл outbox; корректная остановка при shutdown."""
+    """HTTP поднимается сразу. Брокер подключается в фоне и не блокирует старт."""
     setup_logging()
-    broker = get_broker()
-    await broker.start()
     stop_event = asyncio.Event()
-    publisher = OutboxPublisher()
-    task = asyncio.create_task(publisher.run_forever(stop_event), name="outbox-publisher")
-    logger.info("API started, outbox publisher is running")
+    task = asyncio.create_task(supervise_broker(stop_event), name="broker-supervisor")
     try:
         yield
     finally:
@@ -43,27 +29,33 @@ async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
         task.cancel()
         with suppress(asyncio.CancelledError):
             await task
-        await broker.stop()
-        logger.info("API stopped")
 
 
 def create_app(*, with_lifespan: bool = True) -> FastAPI:
-    """Фабрика приложения: в тестах lifespan (брокер/outbox) отключаем."""
+    """В тестах lifespan выключаем: брокер и БД не нужны."""
     application = FastAPI(
         title="Payment Processing Service",
         description=(
-            "Асинхронный микросервис приёма платежей: Outbox → RabbitMQ → consumer, "
-            "эмуляция шлюза и webhook с retry/DLQ."
+            "Приём платежей: запись в БД вместе с outbox, публикация в RabbitMQ, "
+            "обработка consumer'ом и webhook."
         ),
         version="1.0.0",
         lifespan=lifespan if with_lifespan else None,
     )
+    register_exception_handlers(application)
     application.include_router(api_v1_router)
 
     @application.get("/health", tags=["ops"])
     async def health() -> dict[str, str]:
-        """Liveness для Docker healthcheck. Без API-ключа, чтобы оркестратор мог стучаться."""
+        """Liveness: процесс жив. Не проверяет базу и брокер."""
         return {"status": "ok"}
+
+    @application.get("/ready", tags=["ops"])
+    async def ready() -> JSONResponse:
+        """Readiness: без базы 503. Без брокера сервис degraded, но платежи принимает."""
+        report = await readiness_report()
+        code = 200 if report["database"] else 503
+        return JSONResponse(status_code=code, content=report)
 
     return application
 

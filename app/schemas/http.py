@@ -1,13 +1,13 @@
-"""Pydantic-схемы HTTP API и сообщений брокера."""
+"""Контракт HTTP API."""
 
 from datetime import datetime
 from decimal import Decimal
-from typing import Any, Self
+from typing import Any
 from uuid import UUID
 
 from pydantic import AnyHttpUrl, BaseModel, ConfigDict, Field, field_serializer, field_validator
 
-from app.models.payment import Currency, PaymentStatus
+from app.domain.enums import Currency, PaymentStatus
 
 
 class PaymentCreateRequest(BaseModel):
@@ -31,7 +31,7 @@ class PaymentCreateRequest(BaseModel):
 
 
 class PaymentAcceptedResponse(BaseModel):
-    """Ответ 202 Accepted: платёж принят в обработку, но ещё не проведён шлюзом."""
+    """Ответ 202: платёж принят, шлюз ещё не ответил."""
 
     payment_id: UUID
     status: PaymentStatus
@@ -39,7 +39,7 @@ class PaymentAcceptedResponse(BaseModel):
 
 
 class PaymentDetailsResponse(BaseModel):
-    """Полная карточка платежа для GET."""
+    """Карточка платежа для GET."""
 
     model_config = ConfigDict(from_attributes=True)
 
@@ -56,34 +56,5 @@ class PaymentDetailsResponse(BaseModel):
 
     @field_serializer("amount")
     def serialize_amount(self, value: Decimal) -> str:
-        """Decimal в JSON как строка — без ошибок двоичной плавающей точки."""
-        return format(value, "f")
-
-
-class PaymentNewEvent(BaseModel):
-    """Сообщение очереди payments.new: consumer'у достаточно payment_id."""
-
-    payment_id: UUID
-    event_type: str = "payments.new"
-
-    @classmethod
-    def from_payment_id(cls, payment_id: UUID) -> Self:
-        """Фабрика payload для outbox."""
-        return cls(payment_id=payment_id)
-
-
-class WebhookPayload(BaseModel):
-    """Тело callback'а, который уходит на webhook_url клиента."""
-
-    payment_id: UUID
-    status: PaymentStatus
-    amount: Decimal
-    currency: Currency
-    description: str
-    metadata: dict[str, Any]
-    processed_at: datetime | None
-
-    @field_serializer("amount")
-    def serialize_amount(self, value: Decimal) -> str:
-        """Сумма в webhook тоже строкой, чтобы клиент не потерял копейки."""
+        """Decimal в JSON строкой, чтобы не потерять копейки."""
         return format(value, "f")

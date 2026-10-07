@@ -4,8 +4,8 @@ from unittest.mock import patch
 
 import httpx
 import pytest
+from app.adapters.webhook import WebhookDeliveryError, WebhookNotifier
 from app.models.payment import Payment
-from app.services.webhook import WebhookDeliveryError, WebhookNotifier
 from tenacity import wait_none
 
 
@@ -28,7 +28,7 @@ async def test_webhook_retries_then_fails(payment: Payment) -> None:
     client = httpx.AsyncClient(transport=_transport(500), base_url="https://merchant.example")
     notifier = WebhookNotifier(client=client)
     with (
-        patch("app.services.webhook.wait_exponential", return_value=wait_none()),
+        patch("app.adapters.webhook.wait_exponential", return_value=wait_none()),
         pytest.raises(WebhookDeliveryError),
     ):
         await notifier.notify(payment)

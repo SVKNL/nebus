@@ -1,12 +1,12 @@
-"""Схемы запросов и ответов."""
+"""Публичные схемы. HTTP, событие очереди и webhook — разные контракты."""
 
-from app.schemas.payment import (
+from app.schemas.events import PaymentNewEvent
+from app.schemas.http import (
     PaymentAcceptedResponse,
     PaymentCreateRequest,
     PaymentDetailsResponse,
-    PaymentNewEvent,
-    WebhookPayload,
 )
+from app.schemas.webhook import WebhookPayload
 
 __all__ = [
     "PaymentAcceptedResponse",

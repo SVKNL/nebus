@@ -3,7 +3,8 @@
 from datetime import UTC, datetime
 from unittest.mock import AsyncMock
 
-from app.models.payment import Payment, PaymentStatus
+from app.domain.enums import PaymentStatus
+from app.models.payment import Payment
 from app.services.processor import PaymentProcessor
 
 

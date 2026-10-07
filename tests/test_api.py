@@ -5,9 +5,28 @@ from unittest.mock import AsyncMock
 from uuid import uuid4
 
 import httpx
+import pytest
 from app.api.deps import get_payment_service
-from app.models.payment import Payment, PaymentStatus
-from app.services.errors import IdempotencyConflictError, PaymentNotFoundError
+from app.domain.enums import PaymentStatus
+from app.domain.errors import IdempotencyConflictError, PaymentNotFoundError
+from app.models.payment import Payment
+
+
+async def test_ready_without_database(app, monkeypatch: pytest.MonkeyPatch) -> None:
+    async def report() -> dict[str, object]:
+        return {
+            "status": "not_ready",
+            "database": False,
+            "broker": False,
+            "outbox_pending": None,
+        }
+
+    monkeypatch.setattr("app.main.readiness_report", report)
+    transport = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        response = await client.get("/ready")
+    assert response.status_code == 503
+    assert response.json()["database"] is False
 
 
 async def test_health_without_api_key(app) -> None:

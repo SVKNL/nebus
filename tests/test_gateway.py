@@ -5,8 +5,9 @@ from unittest.mock import patch
 from uuid import uuid4
 
 import pytest
-from app.models.payment import Currency, Payment, PaymentStatus
-from app.services.gateway import EmulatedPaymentGateway
+from app.adapters.gateway import EmulatedPaymentGateway
+from app.domain.enums import Currency, PaymentStatus
+from app.models.payment import Payment
 
 
 @pytest.fixture
@@ -36,13 +37,13 @@ class _ScriptedRng:
 
 async def test_gateway_success(pending_payment: Payment) -> None:
     gateway = EmulatedPaymentGateway(success_rate=0.9, rng=_ScriptedRng(0.1))
-    with patch("app.services.gateway.asyncio.sleep", return_value=None):
+    with patch("app.adapters.gateway.asyncio.sleep", return_value=None):
         status = await gateway.charge(pending_payment)
     assert status is PaymentStatus.SUCCEEDED
 
 
 async def test_gateway_failure(pending_payment: Payment) -> None:
     gateway = EmulatedPaymentGateway(success_rate=0.9, rng=_ScriptedRng(0.95))
-    with patch("app.services.gateway.asyncio.sleep", return_value=None):
+    with patch("app.adapters.gateway.asyncio.sleep", return_value=None):
         status = await gateway.charge(pending_payment)
     assert status is PaymentStatus.FAILED

@@ -1,9 +1,8 @@
-"""Отправка webhook клиенту с экспоненциальными повторами."""
+"""HTTP-уведомление мерчанта с экспоненциальными повторами."""
 
 from __future__ import annotations
 
 import logging
-from datetime import UTC, datetime
 from typing import Any
 
 import httpx
@@ -16,19 +15,20 @@ from tenacity import (
 
 from app.config import get_settings
 from app.constants import RETRY_BASE_DELAY_SECONDS, WEBHOOK_MAX_ATTEMPTS
+from app.domain.clock import utc_now
+from app.domain.errors import PaymentProcessingError
 from app.models.payment import Payment
-from app.schemas.payment import WebhookPayload
-from app.services.errors import PaymentProcessingError
+from app.schemas.webhook import WebhookPayload
 
 logger = logging.getLogger(__name__)
 
 
 class WebhookDeliveryError(PaymentProcessingError):
-    """Webhook не доставлен после всех попыток HTTP."""
+    """Webhook не доставлен после всех HTTP-попыток."""
 
 
 class WebhookNotifier:
-    """HTTP-клиент для уведомления мерчанта о финальном статусе платежа."""
+    """POST JSON на payment.webhook_url. Успех — любой 2xx."""
 
     def __init__(
         self,
@@ -40,11 +40,7 @@ class WebhookNotifier:
         self._client = client
 
     async def notify(self, payment: Payment) -> None:
-        """POST JSON на payment.webhook_url.
-
-        Повторы: 3 попытки, backoff 1с → 2с → 4с (wait_exponential, основание 2).
-        Успехом считаем любой 2xx. 4xx/5xx и сетевые ошибки — повод для retry.
-        """
+        """Три попытки, паузы 1с, 2с, 4с."""
         payload = WebhookPayload(
             payment_id=payment.id,
             status=payment.status,
@@ -67,14 +63,14 @@ class WebhookNotifier:
                 await self._post_with_retry(self._client, url, body)
         except (httpx.HTTPError, WebhookDeliveryError) as exc:
             logger.warning(
-                "Webhook failed for payment_id=%s url=%s error=%s",
+                "Webhook failed payment_id=%s url=%s error=%s",
                 payment.id,
                 payment.webhook_url,
                 exc,
             )
             raise WebhookDeliveryError(f"Не удалось доставить webhook: {exc}") from exc
 
-        payment.webhook_sent_at = datetime.now(UTC)
+        payment.webhook_sent_at = utc_now()
         logger.info("Webhook delivered payment_id=%s", payment.id)
 
     async def _post_with_retry(
@@ -102,7 +98,7 @@ class WebhookNotifier:
         url: str,
         body: dict[str, Any],
     ) -> None:
-        """Одна попытка доставки. Не-2xx превращаем в WebhookDeliveryError для retry."""
+        """Не-2xx превращаем в ошибку, чтобы tenacity повторил запрос."""
         response = await client.post(url, json=body)
         if response.is_success:
             return

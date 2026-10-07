@@ -1,11 +1,13 @@
 #!/bin/sh
-# Единая точка входа: накатываем миграции, затем стартуем нужный процесс.
+# Роли: migrate (один раз), api, consumer. Миграции не гоняются в рабочих процессах.
 set -e
 
 role="${1:-api}"
 
-echo "Applying Alembic migrations..."
-alembic upgrade head
+if [ "$role" = "migrate" ]; then
+  echo "Applying Alembic migrations..."
+  exec alembic upgrade head
+fi
 
 if [ "$role" = "api" ]; then
   echo "Starting API (uvicorn)..."
@@ -14,8 +16,8 @@ fi
 
 if [ "$role" = "consumer" ]; then
   echo "Starting payment consumer (FastStream)..."
-  exec faststream run app.consumer.main:app
+  exec faststream run app.workers.consumer:app
 fi
 
-echo "Unknown role: $role (expected api or consumer)" >&2
+echo "Unknown role: $role (expected migrate, api or consumer)" >&2
 exit 1

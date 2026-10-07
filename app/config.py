@@ -6,6 +6,18 @@ from pydantic import Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
+class DatabaseSettings(BaseSettings):
+    """Только URL базы. Alembic не должен требовать API-ключ и RabbitMQ."""
+
+    model_config = SettingsConfigDict(
+        env_file=".env",
+        env_file_encoding="utf-8",
+        extra="ignore",
+    )
+
+    database_url: str = Field(min_length=10)
+
+
 class Settings(BaseSettings):
     """Параметры запуска API, consumer и outbox-publisher.
 

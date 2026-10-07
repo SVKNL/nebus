@@ -5,15 +5,14 @@ from __future__ import annotations
 from typing import Annotated
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, Header, HTTPException, Response, status
+from fastapi import APIRouter, Depends, Header, Response, status
 
 from app.api.deps import get_payment_service, require_api_key
-from app.schemas.payment import (
+from app.schemas.http import (
     PaymentAcceptedResponse,
     PaymentCreateRequest,
     PaymentDetailsResponse,
 )
-from app.services.errors import IdempotencyConflictError, PaymentNotFoundError
 from app.services.payment import PaymentService
 
 router = APIRouter(
@@ -28,7 +27,7 @@ IdempotencyKey = Annotated[
         alias="Idempotency-Key",
         min_length=1,
         max_length=255,
-        description="Обязательный ключ идемпотентности, уникальный на намерение оплаты",
+        description="Ключ идемпотентности, уникальный на намерение оплаты",
     ),
 ]
 
@@ -45,20 +44,8 @@ async def create_payment(
     response: Response,
     service: Annotated[PaymentService, Depends(get_payment_service)],
 ) -> PaymentAcceptedResponse:
-    """Принимает платёж в обработку.
-
-    Платёж и запись outbox сохраняются атомарно. В очередь RabbitMQ событие
-    попадёт чуть позже — его вычитает фоновый OutboxPublisher.
-    Повтор с тем же Idempotency-Key и тем же телом возвращает исходный 202.
-    """
-    try:
-        payment, _replay = await service.create(payload, idempotency_key)
-    except IdempotencyConflictError as exc:
-        raise HTTPException(
-            status_code=status.HTTP_409_CONFLICT,
-            detail=f"Idempotency-Key already used by payment {exc.payment_id}",
-        ) from exc
-
+    """Платёж и строка outbox пишутся одной транзакцией. В очередь событие уйдёт relay."""
+    payment, _replay = await service.create(payload, idempotency_key)
     response.headers["Location"] = f"/api/v1/payments/{payment.id}"
     return PaymentAcceptedResponse(
         payment_id=payment.id,
@@ -76,12 +63,6 @@ async def get_payment(
     payment_id: UUID,
     service: Annotated[PaymentService, Depends(get_payment_service)],
 ) -> PaymentDetailsResponse:
-    """Возвращает актуальную карточку, включая статус после обработки consumer'ом."""
-    try:
-        payment = await service.get(payment_id)
-    except PaymentNotFoundError as exc:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="Payment not found",
-        ) from exc
+    """Актуальная карточка, включая статус после consumer'а."""
+    payment = await service.get(payment_id)
     return PaymentDetailsResponse.model_validate(payment)
